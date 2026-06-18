@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { analyzeAssignment, analyzeError, hintGenerator } from './utils/analysis';
+import { useState } from 'react';
+import { generateSupport } from './services/assistantService';
 
 function Panel({ title, subtitle, children }) {
   return (
@@ -21,6 +21,30 @@ function TabButton({ active, onClick, children }) {
   );
 }
 
+const initialResult = {
+  summary: {
+    taskOverview: 'Generate guidance to see a beginner-friendly summary of the assignment.',
+    keyRequirements: ['Key requirements will appear here.'],
+    watchOuts: ['Important watch-outs will appear here.'],
+  },
+  debug: {
+    likelyIssue: 'The likely issue will appear here after analysis.',
+    possibleCauses: ['Possible causes will appear here.'],
+    checksFirst: ['Suggested checks will appear here.'],
+    formattingCheck: 'Formatting guidance will appear here.',
+  },
+  hints: {
+    nextStep: 'Your next step will appear here.',
+    whyThisStep: 'The reason for that step will appear here.',
+    tinyTestCase: 'A tiny test case will appear here.',
+    conceptHint: 'A short concept hint will appear here.',
+  },
+  meta: {
+    mode: 'fallback',
+    usedFallback: false,
+  },
+};
+
 export default function App() {
   const [studentName, setStudentName] = useState('Minjun');
   const [assignment, setAssignment] = useState(
@@ -38,20 +62,28 @@ export default function App() {
   ]);
   const [chatInput, setChatInput] = useState('');
   const [activeTab, setActiveTab] = useState('summary');
+  const [mode, setMode] = useState('llm');
+  const [isLoading, setIsLoading] = useState(false);
+  const [apiError, setApiError] = useState('');
+  const [result, setResult] = useState(initialResult);
 
-  const assignmentAnalysis = useMemo(() => analyzeAssignment(assignment), [assignment]);
-  const errorAnalysis = useMemo(() => analyzeError(error, code), [error, code]);
-  const hints = useMemo(() => hintGenerator(assignment, code, error), [assignment, code, error]);
+  async function handleGenerate() {
+    setIsLoading(true);
+    setApiError('');
 
-  function handleGenerate() {
-    const assistantReply =
-      'Here’s a beginner-friendly explanation: This assignment mainly asks you to build the required data structure correctly, follow the input/output format, and handle edge cases safely. Based on your error, I would first check empty cases and pointer safety before changing the overall design.';
-
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', text: 'Can you help me understand this assignment and debug my issue?' },
-      { role: 'assistant', text: assistantReply },
-    ]);
+    try {
+      const output = await generateSupport({ assignment, code, error, mode });
+      setResult(output);
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', text: 'Can you help me understand this assignment and debug my issue?' },
+        { role: 'assistant', text: output.summary.taskOverview || 'I generated a new analysis for your input.' },
+      ]);
+    } catch (err) {
+      setApiError('Failed to generate support.');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function handleChat() {
@@ -59,17 +91,16 @@ export default function App() {
 
     const userMessage = chatInput.trim();
     const lower = userMessage.toLowerCase();
-    let reply =
-      'Try narrowing the problem to one very small test case and compare each step of your code against the assignment requirements.';
+    let reply = 'Try the next step shown in the Next Step Hints tab first.';
 
     if (lower.includes('what') && lower.includes('assignment')) {
-      reply = assignmentAnalysis.summary;
+      reply = result.summary.taskOverview;
     } else if (lower.includes('error') || lower.includes('bug') || lower.includes('fault')) {
-      reply = `${errorAnalysis.errorType}: ${errorAnalysis.explanation}`;
+      reply = result.debug.likelyIssue;
     } else if (lower.includes('hint') || lower.includes('check first')) {
-      reply = `First things to check: ${hints.slice(0, 2).join(' ')}`;
+      reply = `${result.hints.nextStep} Why: ${result.hints.whyThisStep}`;
     } else if (lower.includes('requirements')) {
-      reply = `Key requirements: ${assignmentAnalysis.requirements.join(' ')}`;
+      reply = `Key requirements: ${result.summary.keyRequirements.join(' ')}`;
     }
 
     setMessages((prev) => [
@@ -84,21 +115,32 @@ export default function App() {
     setAssignment('');
     setCode('');
     setError('');
+    setApiError('');
+    setResult(initialResult);
   }
 
   return (
     <div className="app-shell">
       <header className="hero panel">
         <div>
-          <span className="badge">Prototype</span>
+          <span className="badge">Upgraded Prototype</span>
           <h1>CodeGuide</h1>
           <p>
-            An LLM-inspired assignment understanding assistant for beginner computer science students.
+            An LLM-enhanced assignment understanding assistant for beginner computer science students.
           </p>
         </div>
-        <div className="name-box">
-          <label>Student name</label>
-          <input value={studentName} onChange={(e) => setStudentName(e.target.value)} />
+        <div className="hero-controls">
+          <div className="name-box">
+            <label>Student name</label>
+            <input value={studentName} onChange={(e) => setStudentName(e.target.value)} />
+          </div>
+          <div className="name-box">
+            <label>Analysis Mode</label>
+            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="llm">LLM-enhanced</option>
+              <option value="fallback">Rule-based</option>
+            </select>
+          </div>
         </div>
       </header>
 
@@ -119,9 +161,15 @@ export default function App() {
                 <textarea value={error} onChange={(e) => setError(e.target.value)} rows={5} />
               </label>
               <div className="button-row">
-                <button className="primary" onClick={handleGenerate}>Generate Guidance</button>
+                <button className="primary" onClick={handleGenerate} disabled={isLoading}>
+                  {isLoading ? 'Generating...' : 'Generate Guidance'}
+                </button>
                 <button className="secondary" onClick={clearInputs}>Clear Inputs</button>
               </div>
+              {apiError ? <p className="error-text">{apiError}</p> : null}
+              {result.meta.usedFallback ? (
+                <p className="status-text">LLM request failed or was unavailable. Showing fallback analysis.</p>
+              ) : null}
             </div>
           </Panel>
 
@@ -148,27 +196,28 @@ export default function App() {
         </div>
 
         <div className="right-column">
-          <Panel title="Guidance Output" subtitle="Simple explanations based on the student's current input.">
+          <Panel title="Guidance Output" subtitle="Structured educational support based on the student's current input.">
             <div className="tabs">
               <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')}>Summary</TabButton>
               <TabButton active={activeTab === 'debug'} onClick={() => setActiveTab('debug')}>Debug</TabButton>
-              <TabButton active={activeTab === 'hints'} onClick={() => setActiveTab('hints')}>Hints</TabButton>
+              <TabButton active={activeTab === 'hints'} onClick={() => setActiveTab('hints')}>Next Step Hints</TabButton>
             </div>
 
             {activeTab === 'summary' && (
               <div className="tab-content">
                 <div className="info-box">
-                  <p>{assignmentAnalysis.summary}</p>
+                  <strong>Task Overview</strong>
+                  <p>{result.summary.taskOverview}</p>
                 </div>
                 <h3>Key Requirements</h3>
                 <ul className="card-list">
-                  {assignmentAnalysis.requirements.map((item, index) => (
+                  {result.summary.keyRequirements.map((item, index) => (
                     <li key={index}>{item}</li>
                   ))}
                 </ul>
-                <h3>Things to Watch</h3>
+                <h3>Watch-outs</h3>
                 <ul className="card-list warning">
-                  {assignmentAnalysis.warnings.map((item, index) => (
+                  {result.summary.watchOuts.map((item, index) => (
                     <li key={index}>{item}</li>
                   ))}
                 </ul>
@@ -178,38 +227,57 @@ export default function App() {
             {activeTab === 'debug' && (
               <div className="tab-content">
                 <div className="info-box">
-                  <strong>Detected Issue</strong>
-                  <p>{errorAnalysis.errorType}</p>
+                  <strong>Likely Issue</strong>
+                  <p>{result.debug.likelyIssue}</p>
                 </div>
                 <div className="info-box plain">
-                  <strong>Beginner-Friendly Explanation</strong>
-                  <p>{errorAnalysis.explanation}</p>
+                  <strong>Possible Causes</strong>
+                  <ul className="inner-list">
+                    {result.debug.possibleCauses.map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ul>
                 </div>
-                <h3>Suggested Debugging Steps</h3>
-                <ol className="card-list numbered">
-                  {errorAnalysis.steps.map((step, index) => (
-                    <li key={index}>{step}</li>
+                <h3>What to Check First</h3>
+                <ul className="card-list">
+                  {result.debug.checksFirst.map((item, index) => (
+                    <li key={index}>{item}</li>
                   ))}
-                </ol>
+                </ul>
+                <div className="info-box plain">
+                  <strong>Formatting Check</strong>
+                  <p>{result.debug.formattingCheck}</p>
+                </div>
               </div>
             )}
 
             {activeTab === 'hints' && (
               <div className="tab-content">
-                <ul className="card-list">
-                  {hints.map((hint, index) => (
-                    <li key={index}>{hint}</li>
-                  ))}
-                </ul>
+                <div className="hint-card">
+                  <strong>Next Step</strong>
+                  <p>{result.hints.nextStep}</p>
+                </div>
+                <div className="hint-card">
+                  <strong>Why This Step</strong>
+                  <p>{result.hints.whyThisStep}</p>
+                </div>
+                <div className="hint-card">
+                  <strong>Tiny Test Case</strong>
+                  <p>{result.hints.tinyTestCase}</p>
+                </div>
+                <div className="hint-card">
+                  <strong>Concept Hint</strong>
+                  <p>{result.hints.conceptHint}</p>
+                </div>
               </div>
             )}
           </Panel>
 
-          <Panel title="Prototype Scope" subtitle="What this demo is designed to show.">
+          <Panel title="Prototype Scope" subtitle="What this upgraded demo is designed to show.">
             <div className="scope-boxes">
-              <div className="info-box"><strong>Goal:</strong> Show how a beginner-friendly assistant can explain assignments, interpret common errors, and suggest debugging hints.</div>
-              <div className="info-box"><strong>Current limitation:</strong> This is a front-end prototype with rule-based responses that simulate an LLM workflow.</div>
-              <div className="info-box"><strong>Next step:</strong> Connect this interface to a real LLM API and evaluate user satisfaction with beginner students.</div>
+              <div className="info-box"><strong>Goal:</strong> Show how a beginner-friendly assistant can explain assignments, interpret common errors, and suggest structured next-step hints.</div>
+              <div className="info-box"><strong>Current limitation:</strong> LLM outputs can still be imperfect, so the system uses cautious wording and fallback analysis.</div>
+              <div className="info-box"><strong>Upgrade:</strong> This version supports both rule-based and LLM-enhanced analysis for comparison.</div>
             </div>
           </Panel>
         </div>
